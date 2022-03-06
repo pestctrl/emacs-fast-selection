@@ -28,7 +28,7 @@
     (save-window-excursion
       )))
 
-(defun emacs-fast-selection (current inherited table)
+(defun emacs-fast-selection (table)
   "Fast tag selection with single keys.
 CURRENT is the current list of tags in the headline, INHERITED is the
 list of inherited tags, and TABLE is an alist of tags and corresponding keys,
@@ -49,6 +49,7 @@ Returns the new tags string, or nil to not change the current settings."
 	 (ncol (/ (- (window-width) 4) fwidth))
 	 (i-face 'org-done)
 	 (c-face 'org-todo)
+     current
 	 tg cnt e c char c1 c2 ntable tbl rtn
 	 ov-start ov-end ov-prefix
 	 (exit-after-next org-fast-tag-selection-single-key)
@@ -77,8 +78,7 @@ Returns the new tags string, or nil to not change the current settings."
 	(org-switch-to-buffer-other-window " *Org tags*")
 	(erase-buffer)
 	(setq-local org-done-keywords done-keywords)
-	(org-fast-tag-insert "Inherited" inherited i-face "\n")
-	(org-fast-tag-insert "Current" current c-face "\n\n")
+	(org-fast-tag-insert "Selected" current c-face "\n\n")
 	(org-fast-tag-show-exit exit-after-next)
 	(org-set-current-tags-overlay current ov-prefix)
 	(setq tbl table char ?a cnt 0)
@@ -110,8 +110,7 @@ Returns the new tags string, or nil to not change the current settings."
 				    (cond
 				     ((not (assoc tg table))
 				      (org-get-todo-face tg))
-				     ((member tg current) c-face)
-				     ((member tg inherited) i-face))))
+				     ((member tg current) c-face))))
 	    (when (equal (caar tbl) :grouptags)
 	      (org-add-props tg nil 'face 'org-tag-group))
 	    (when (and (zerop cnt) (not ingroup) (not intaggroup)) (insert "  "))
@@ -193,9 +192,9 @@ Returns the new tags string, or nil to not change the current settings."
 				(assoc b (cdr (memq (assoc a ntable) ntable))))))
 		  (when (eq exit-after-next 'now) (throw 'exit t))
 		  (goto-char (point-min))
-		  (beginning-of-line 2)
+		  (beginning-of-line 1)
 		  (delete-region (point) (point-at-eol))
-		  (org-fast-tag-insert "Current" current c-face)
+		  (org-fast-tag-insert "Selected" current c-face)
 		  (org-set-current-tags-overlay current ov-prefix)
 		  (let ((tag-re (concat "\\[.\\] \\(" org-tag-re "\\)")))
 		    (while (re-search-forward tag-re nil t)
@@ -205,7 +204,6 @@ Returns the new tags string, or nil to not change the current settings."
 			 (list 'face
 			       (cond
 				((member tag current) c-face)
-				((member tag inherited) i-face)
 				(t (get-text-property (match-beginning 1) '
 						      face))))))))
 		  (goto-char (point-min)))))
@@ -214,7 +212,7 @@ Returns the new tags string, or nil to not change the current settings."
 	    (mapconcat 'identity current ":")
 	  nil)))))
 
-(emacs-fast-selection '("a" "b") '("dev" "emacs") '(("Hello" . ?h) ("World") ("Clock") ("Create_Tab" . ?t)))
+(emacs-fast-selection '(("Hello" . ?h) ("World") ("Clock") ("Create_Tab" . ?t)))
 
 (provide 'emacs-fast-selection)
 ;;; emacs-fast-selection.el ends here
