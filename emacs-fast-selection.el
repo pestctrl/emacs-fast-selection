@@ -24,9 +24,49 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'subr-x)
+(require 'eieio)
 
 (defvar efs/selected-face 'org-todo)
 (defvar efs/unselected-face nil)
+
+(defclass efs-select-machine ()
+  ((lookup-table :initfrom nil :initarg :lookup-table)
+   (group-list :initform nil :initarg :group-list)
+   (current :initform nil)))
+
+(defun efsss/make (select-spec)
+  (efs-select-machine :lookup-table (efs/construct-lookup-table (remove-if (lambda (x) (eq x :newline))
+                                                                           (flatten-list select-spec)))
+                      :group-list (remove-if (lambda (x) (not (consp x)))
+                                             select-spec)))
+
+(defmethod efsss/selected ((efsss efs-select-machine))
+  (slot-value efsss 'current))
+
+(defmethod efsss/key-to-sym ((efsss efs-select-machine) key)
+  (with-slots (lookup-table) efsss
+    (rassoc key lookup-table)))
+
+(defmethod efsss/sym-to-key ((efsss efs-select-machine) sym)
+  (with-slots (lookup-table) efsss
+    (assoc sym lookup-table)))
+
+(defmethod efsss/select ((efsss efs-select-machine) key)
+  (with-slots (lookup-table group-list current) efsss
+    (let* ((option (car (rassoc key lookup-table))))
+      (if (member option current)
+          (setf current (delq option current))
+        (push option current))
+      (when-let (group (car (remove-if-not (lambda (group) (member option group))
+                                           group-list)))
+        (let ((to-remove (remq option group)))
+          (dolist (sym to-remove)
+            (setf current (delq sym current))))))
+    (setf current
+          (sort current
+                (lambda (a b)
+                  (assoc b (cdr (memq (assoc a lookup-table) lookup-table))))))))
 
 (defun efs/add-props (string &rest props)
   "Add text properties to entire string, from beginning to end.
@@ -36,58 +76,67 @@ that will be added to PLIST.  Returns the string that was modified."
                        props string)
   string)
 
-(defun efs/construct-lookup-table (table)
-  (let* ((tbl-iter (copy-sequence table))
-         (char-iter ?a)
+(defun efs/construct-lookup-table (option-list)
+  (let* ((char-iter ?a)
          (cnt 0)
-         ntable)
-    (while (setq e (pop tbl-iter))
-      (let* ((tag-string (symbol-name e))
+         lookup-table)
+    (dolist (sym option-list)
+      (let* ((option-string (symbol-name sym))
              (first-char
-              (string-to-char (downcase tag-string)))
+              (string-to-char (downcase option-string)))
              key)
         ;; If nothing has used the first character
-        (if (and (not (rassoc first-char ntable))
-                 (not (rassoc first-char table)))
+        (if (and (not (rassoc first-char lookup-table))
+                 (not (rassoc first-char option-list)))
             ;; Use that as the key
             (setq key first-char)
           ;; Search for a free key
-          (while (or (rassoc char-iter ntable)
-                     (rassoc char-iter table))
+          (while (or (rassoc char-iter lookup-table)
+                     (rassoc char-iter option-list))
             (incf char-iter))
-          (setq key  char-iter))
-        (setq tag-string (efs/add-props tag-string 'face nil))
-        (push (cons tag-string key) ntable)))
-    (nreverse ntable)))
+          (setq key char-iter))
+        (push (cons sym key) lookup-table)))
+    (nreverse lookup-table)))
 
-(defun efs/construct-selection-buffer (table ntable)
-  (let* ((maxlen (if (null table) 0
+(defun efs/construct-selection-buffer (select-spec state-machine)
+  (let* ((maxlen (if (null select-spec) 0
                    (apply #'max
                           (mapcar (lambda (x)
-                                    (string-width (symbol-name x)))
-                                  table))))
+                                    (if (keywordp x) 0 (string-width (symbol-name x))))
+                                  (flatten-list select-spec)))))
          (fwidth (+ maxlen 3 1 3))
          (ncol (/ (- (window-width) 4) fwidth))
-         tbl char cnt current
-         tag-string c tag-first-char)
-    (save-excursion
-      (save-window-excursion
-        (set-buffer (get-buffer-create " *Emacs Fast Selection*"))
-
+         char cnt)
+    (cl-labels ((insert-option
+                 (sym)
+                 (let* ((option-string (--> (symbol-name sym)
+                                            (efs/add-props it 'face nil)))
+                        (key (cdr (efsss/sym-to-key state-machine sym))))
+                   (insert "[" key "] " option-string
+                           (make-string (- fwidth 4 (length option-string)) ?\ ))
+                   (when (= (cl-incf cnt) ncol)
+                     (setq cnt 0))))
+                (handle-keyword
+                 (keyword)
+                 (pcase keyword
+                   (:newline (insert "\n") (setq cnt 0)))))
+      (with-current-buffer (get-buffer-create " *Emacs Fast Selection*")
         (erase-buffer)
         (insert "\n\n")
-        (setq tbl table
-              char ?a
+        (setq char ?a
               cnt 0)
-        (while (setq e (pop tbl))
-          (let* ((tag-string (--> (symbol-name e)
-                                 (efs/add-props it 'face nil)))
-                 (key (cdr (assoc tag-string ntable))))
-            (when (zerop cnt) (insert "  "))
-            (insert "[" key "] " tag-string
-                    (make-string (- fwidth 4 (length tag-string)) ?\ ))
-            (when (= (cl-incf cnt) ncol)
-              (setq cnt 0))))
+        (dolist (front select-spec)
+          (when (zerop cnt) (insert "  "))
+          (cond
+           ((keywordp front) (handle-keyword front))
+           ((symbolp front) (insert-option front))
+           (t
+            (insert "\n" "{ ")
+            (dolist (sym front)
+              (cl-assert (symbolp sym))
+              (insert-option sym))
+            (insert "}" "\n")
+            (setq cnt 0))))
         (insert "\n")
         (efs/update-efs-buffer nil)
         (current-buffer)))))
@@ -98,60 +147,59 @@ that will be added to PLIST.  Returns the string that was modified."
   (delete-region (point) (point-at-eol))
   (let ((header (format "%-12s" "Selected:"))
         (selected-tags (--> current
-                            (mapconcat 'identity it " ")
+                            (mapconcat #'symbol-name it " ")
                             (efs/add-props it 'face efs/selected-face))))
     (insert header selected-tags))
-  (let ((tag-re (concat "\\[.\\] \\(" org-tag-re "\\)")))
-    (while (re-search-forward tag-re nil t)
+  (let ((option-re "\\[.\\] \\([^ ]+\\)"))
+    (while (re-search-forward option-re nil t)
       (let ((tag (match-string 1)))
         (add-text-properties
          (match-beginning 1) (match-end 1)
          (list 'face
                (cond
-                ((member tag current) efs/selected-face)
+                ((member (intern tag) current) efs/selected-face)
                 (t efs/unselected-face))))))))
 
-(defun emacs-fast-selection (table)
-  (let* ((exit-after-next nil)
-         (lookup-table (efs/construct-lookup-table table))
-         (efs-buffer (efs/construct-selection-buffer table lookup-table))
-         current tag-string keypress)
+(defun emacs-fast-select (&rest select-spec)
+  (let* ((state-machine (efsss/make select-spec))
+         (efs-buffer (efs/construct-selection-buffer select-spec state-machine))
+         current option keypress exit-after-next)
     (save-excursion
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (split-window-vertically) efs-buffer)
-        (org-switch-to-buffer-other-window efs-buffer)
+        (let (pop-up-frames pop-up-windows)
+          (switch-to-buffer-other-window efs-buffer))
         (goto-char (point-min))
-        (org-fit-window-to-buffer)
+        ;; May need to revert to org-fit-window-to-buffer
+        (fit-window-to-buffer)
         (catch 'exit
           (while t
-            (message "[a-z..]:toggle [SPC]:clear [RET]:accept")
-            (setq keypress (let ((inhibit-quit t)) (read-char-exclusive)))
-            (cond
-             ((= keypress ?\r) (throw 'exit t))
-             ((or (= keypress ?\C-g)
-                  (and (= keypress ?q) (not (rassoc keypress lookup-table))))
-              (setq quit-flag t))
-             ((= keypress ?\ )
-              (setq current nil)
-              (when exit-after-next (setq exit-after-next 'now)))
-             ((setq tag-string (car (rassoc keypress lookup-table)))
-              (if (member tag-string current)
-                  (setq current (delete tag-string current))
-                (push tag-string current))
-              (when exit-after-next (setq exit-after-next 'now))))
+            (save-excursion
+              (message "[a-z..]:toggle [SPC]:clear [RET]:accept")
+              (setq keypress (let ((inhibit-quit t)) (read-char-exclusive)))
+              (cond
+               ((= keypress ?\r) (throw 'exit t))
+               ((or (= keypress ?\C-g)
+                    (and (= keypress ?q) (not (efsss/key-to-sym state-machine keypress))))
+                (setq quit-flag t))
+               ((= keypress ?\ )
+                (setf (slot-value state-machine 'current) nil)
+                (when exit-after-next (setq exit-after-next 'now)))
+               (t
+                (efsss/select state-machine keypress)
+                (when exit-after-next (setq exit-after-next 'now))))
+              (when (eq exit-after-next 'now) (throw 'exit t))
+              (efs/update-efs-buffer (slot-value state-machine 'current))
+              (goto-char (point-min)))))
+        (slot-value state-machine 'current)))))
 
-            ;; Create a sorted list
-            (setq current
-                  (sort current
-                        (lambda (a b)
-                          (assoc b (cdr (memq (assoc a lookup-table) lookup-table))))))
-            (when (eq exit-after-next 'now) (throw 'exit t))
-            (efs/update-efs-buffer current)
-            (goto-char (point-min))))
-        current))))
+(emacs-fast-select 'Hello
+                   'World
+                   '(Tabs Spaces))
 
-(let ((a (emacs-fast-selection '(Hello World Allow Woah Where Clock Create_Tab))))
+(let ((a (emacs-fast-select 'Hello 'World :newline 'Allow
+                            '(Woah Where Clock) 'Create_Tab)))
   (message "%s" a))
 
 (provide 'emacs-fast-selection)
