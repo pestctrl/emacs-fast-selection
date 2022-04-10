@@ -32,57 +32,42 @@
   "Add text properties to entire string, from beginning to end.
 PLIST may be a list of properties, PROPS are individual properties and values
 that will be added to PLIST.  Returns the string that was modified."
-  (declare (indent 2))
   (add-text-properties 0 (length string)
                        props string)
   string)
 
 (defun efs/construct-lookup-table (table)
-  (let* ((maxlen (if (null table) 0
-                   (apply #'max
-                          (mapcar (lambda (x)
-                                    (if (stringp (car x)) (string-width (car x))
-                                      0))
-                                  table))))
-         (fwidth (+ maxlen 3 1 3))
-         (ncol (/ (- (window-width) 4) fwidth))
-         (exit-after-next org-fast-tag-selection-single-key)
-         (tbl-iter (copy-sequence table))
+  (let* ((tbl-iter (copy-sequence table))
          (char-iter ?a)
          (cnt 0)
-         ntable key)
-    (setq cnt 0)
+         ntable)
     (while (setq e (pop tbl-iter))
-      (when (not (equal e '(:newline)))
-        (let* ((tag-string (copy-sequence (car e)))
-               (first-char
-                (string-to-char (downcase tag-string))))
-          (setq key (cond
-                     ((cdr e) (cdr e))
-                     ((and (not (rassoc first-char ntable))
-                           (not (rassoc first-char table)))
-                      first-char)
-                     (t
-                      (while (or (rassoc char-iter ntable)
-                                 (rassoc char-iter table))
-                        (incf char-iter))
-                      char-iter)))
-          (setq tag-string (efs/add-props tag-string 'face
-                             nil))
-          (push (cons tag-string key) ntable))))
+      (let* ((tag-string (symbol-name e))
+             (first-char
+              (string-to-char (downcase tag-string)))
+             key)
+        ;; If nothing has used the first character
+        (if (and (not (rassoc first-char ntable))
+                 (not (rassoc first-char table)))
+            ;; Use that as the key
+            (setq key first-char)
+          ;; Search for a free key
+          (while (or (rassoc char-iter ntable)
+                     (rassoc char-iter table))
+            (incf char-iter))
+          (setq key  char-iter))
+        (setq tag-string (efs/add-props tag-string 'face nil))
+        (push (cons tag-string key) ntable)))
     (nreverse ntable)))
 
 (defun efs/construct-selection-buffer (table ntable)
   (let* ((maxlen (if (null table) 0
                    (apply #'max
                           (mapcar (lambda (x)
-                                    (if (stringp (car x)) (string-width (car x))
-                                      0))
+                                    (string-width (symbol-name x)))
                                   table))))
          (fwidth (+ maxlen 3 1 3))
          (ncol (/ (- (window-width) 4) fwidth))
-         (done-keywords org-done-keywords)
-         (exit-after-next org-fast-tag-selection-single-key)
          tbl char cnt current
          tag-string c tag-first-char)
     (save-excursion
@@ -90,32 +75,19 @@ that will be added to PLIST.  Returns the string that was modified."
         (set-buffer (get-buffer-create " *Emacs Fast Selection*"))
 
         (erase-buffer)
-        (setq-local org-done-keywords done-keywords)
         (insert "\n\n")
-        (org-fast-tag-show-exit exit-after-next)
         (setq tbl table
               char ?a
               cnt 0)
         (while (setq e (pop tbl))
-          (cond
-           ((equal e '(:newline))
-            (unless (zerop cnt)
-              (setq cnt 0)
-              (insert "\n")
-              (setq e (car tbl))
-              (while (equal (car tbl) '(:newline))
-                (insert "\n")
-                (setq tbl (cdr tbl)))))
-           (t
-            (setq tag-string (copy-sequence (car e)))
-            (setq tag-string (efs/add-props tag-string 'face
-                               (when (member tag-string current)
-                                 efs/selected-face)))
+          (let* ((tag-string (--> (symbol-name e)
+                                 (efs/add-props it 'face nil)))
+                 (key (cdr (assoc tag-string ntable))))
             (when (zerop cnt) (insert "  "))
-            (insert "[" (cdr (assoc tag-string ntable)) "] " tag-string (make-string
-                                                                      (- fwidth 4 (length tag-string)) ?\ ))
+            (insert "[" key "] " tag-string
+                    (make-string (- fwidth 4 (length tag-string)) ?\ ))
             (when (= (cl-incf cnt) ncol)
-              (setq cnt 0)))))
+              (setq cnt 0))))
         (insert "\n")
         (efs/update-efs-buffer nil)
         (current-buffer)))))
@@ -140,63 +112,46 @@ that will be added to PLIST.  Returns the string that was modified."
                 (t efs/unselected-face))))))))
 
 (defun emacs-fast-selection (table)
-  (let* ((expert nil) ;; TODO: Add expert mode?
-         (exit-after-next org-fast-tag-selection-single-key)
-         (lookup-table (efs/construct-lookup-table (remove-if
-                                                    (lambda (x) (equal x '(:newline)))
-                                                    table)))
+  (let* ((exit-after-next nil)
+         (lookup-table (efs/construct-lookup-table table))
          (efs-buffer (efs/construct-selection-buffer table lookup-table))
-         current tag-string e c rtn)
+         current tag-string keypress)
     (save-excursion
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (split-window-vertically) efs-buffer)
         (org-switch-to-buffer-other-window efs-buffer)
         (goto-char (point-min))
-        (unless expert (org-fit-window-to-buffer))
-        (setq rtn
-              (catch 'exit
-                (while t
-                  (message "[a-z..]:toggle [SPC]:clear [RET]:accept [C-c]:%s"
-                           (if expert "window" (if exit-after-next "single" "multi")))
+        (org-fit-window-to-buffer)
+        (catch 'exit
+          (while t
+            (message "[a-z..]:toggle [SPC]:clear [RET]:accept")
+            (setq keypress (let ((inhibit-quit t)) (read-char-exclusive)))
+            (cond
+             ((= keypress ?\r) (throw 'exit t))
+             ((or (= keypress ?\C-g)
+                  (and (= keypress ?q) (not (rassoc keypress lookup-table))))
+              (setq quit-flag t))
+             ((= keypress ?\ )
+              (setq current nil)
+              (when exit-after-next (setq exit-after-next 'now)))
+             ((setq tag-string (car (rassoc keypress lookup-table)))
+              (if (member tag-string current)
+                  (setq current (delete tag-string current))
+                (push tag-string current))
+              (when exit-after-next (setq exit-after-next 'now))))
 
-                  (setq c (let ((inhibit-quit t)) (read-char-exclusive)))
-                  (cond
-                   ((= c ?\r) (throw 'exit t))
-                   ((= c ?\C-c)
-                    (if (not expert)
-                        (org-fast-tag-show-exit
-                         (setq exit-after-next (not exit-after-next)))
-                      (setq expert nil)
-                      (delete-other-windows)
-                      (set-window-buffer (split-window-vertically) efs/buffer-name)
-                      (org-switch-to-buffer-other-window efs/buffer-name)
-                      (org-fit-window-to-buffer)))
-                   ((or (= c ?\C-g)
-                        (and (= c ?q) (not (rassoc c lookup-table))))
-                    (setq quit-flag t))
-                   ((= c ?\ )
-                    (setq current nil)
-                    (when exit-after-next (setq exit-after-next 'now)))
-                   ((setq e (rassoc c lookup-table) tag-string (car e))
-                    (if (member tag-string current)
-                        (setq current (delete tag-string current))
-                      (push tag-string current))
-                    (when exit-after-next (setq exit-after-next 'now))))
+            ;; Create a sorted list
+            (setq current
+                  (sort current
+                        (lambda (a b)
+                          (assoc b (cdr (memq (assoc a lookup-table) lookup-table))))))
+            (when (eq exit-after-next 'now) (throw 'exit t))
+            (efs/update-efs-buffer current)
+            (goto-char (point-min))))
+        current))))
 
-                  ;; Create a sorted list
-                  (setq current
-                        (sort current
-                              (lambda (a b)
-                                (assoc b (cdr (memq (assoc a lookup-table) lookup-table))))))
-                  (when (eq exit-after-next 'now) (throw 'exit t))
-                  (efs/update-efs-buffer current)
-                  (goto-char (point-min)))))
-        (if rtn
-            (mapconcat 'identity current ":")
-          nil)))))
-
-(let ((a (emacs-fast-selection '(("Hello" . ?h) ("World") (:newline) ("Allow") ("Woah") ("Where") ("Clock") ("Create_Tab" . ?t)))))
+(let ((a (emacs-fast-selection '(Hello World Allow Woah Where Clock Create_Tab))))
   (message "%s" a))
 
 (provide 'emacs-fast-selection)
