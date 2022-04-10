@@ -23,6 +23,8 @@
 ;;; Commentary:
 
 ;;; Code:
+(require 'cl-lib)
+
 (defvar efs/selected-face 'org-todo)
 (defvar efs/unselected-face nil)
 
@@ -35,7 +37,42 @@ that will be added to PLIST.  Returns the string that was modified."
                        props string)
   string)
 
-(defun efs/construct-selection-buffer (buffer table)
+(defun efs/construct-lookup-table (table)
+  (let* ((maxlen (if (null table) 0
+                   (apply #'max
+                          (mapcar (lambda (x)
+                                    (if (stringp (car x)) (string-width (car x))
+                                      0))
+                                  table))))
+         (fwidth (+ maxlen 3 1 3))
+         (ncol (/ (- (window-width) 4) fwidth))
+         (exit-after-next org-fast-tag-selection-single-key)
+         (tbl-iter (copy-sequence table))
+         (char-iter ?a)
+         (cnt 0)
+         ntable key)
+    (setq cnt 0)
+    (while (setq e (pop tbl-iter))
+      (when (not (equal e '(:newline)))
+        (let* ((tag-string (copy-sequence (car e)))
+               (first-char
+                (string-to-char (downcase tag-string))))
+          (setq key (cond
+                     ((cdr e) (cdr e))
+                     ((and (not (rassoc first-char ntable))
+                           (not (rassoc first-char table)))
+                      first-char)
+                     (t
+                      (while (or (rassoc char-iter ntable)
+                                 (rassoc char-iter table))
+                        (incf char-iter))
+                      char-iter)))
+          (setq tag-string (efs/add-props tag-string 'face
+                             nil))
+          (push (cons tag-string key) ntable))))
+    (nreverse ntable)))
+
+(defun efs/construct-selection-buffer (table ntable)
   (let* ((maxlen (if (null table) 0
                    (apply #'max
                           (mapcar (lambda (x)
@@ -46,20 +83,19 @@ that will be added to PLIST.  Returns the string that was modified."
          (ncol (/ (- (window-width) 4) fwidth))
          (done-keywords org-done-keywords)
          (exit-after-next org-fast-tag-selection-single-key)
-         tbl char cnt ntable ingroup intaggroup current)
+         tbl char cnt current
+         tag-string c tag-first-char)
     (save-excursion
       (save-window-excursion
-        (set-buffer (get-buffer-create buffer))
+        (set-buffer (get-buffer-create " *Emacs Fast Selection*"))
 
         (erase-buffer)
         (setq-local org-done-keywords done-keywords)
-        (let ((header (format "%-12s" "Selected:"))
-              (selected-tags (--> current
-                                  (mapconcat 'identity it " ")
-                                  (efs/add-props it 'face efs/selected-face))))
-          (insert header selected-tags "\n\n"))
+        (insert "\n\n")
         (org-fast-tag-show-exit exit-after-next)
-        (setq tbl table char ?a cnt 0)
+        (setq tbl table
+              char ?a
+              cnt 0)
         (while (setq e (pop tbl))
           (cond
            ((equal e '(:newline))
@@ -71,50 +107,51 @@ that will be added to PLIST.  Returns the string that was modified."
                 (insert "\n")
                 (setq tbl (cdr tbl)))))
            (t
-            (setq tg (copy-sequence (car e)) c2 nil)
-            (if (cdr e)
-                (setq c (cdr e))
-              ;; automatically assign a character.
-              (setq c1 (string-to-char
-                        (downcase (substring
-                                   tg (if (= (string-to-char tg) ?@) 1 0)))))
-              (if (or (rassoc c1 ntable) (rassoc c1 table))
-                  (while (or (rassoc char ntable) (rassoc char table))
-                    (setq char (1+ char)))
-                (setq c2 c1))
-              (setq c (or c2 char)))
-            (when ingroup (push tg (car groups)))
-            (setq tg (efs/add-props tg 'face
-                       (cond
-                        ((not (assoc tg table))
-                         (org-get-todo-face tg))
-                        ((member tg current) efs/selected-face))))
-            (when (equal (caar tbl) :grouptags)
-              (efs/add-props tg 'face 'org-tag-group))
-            (when (and (zerop cnt) (not ingroup) (not intaggroup)) (insert "  "))
-            (insert "[" c "] " tg (make-string
-                                   (- fwidth 4 (length tg)) ?\ ))
-            (push (cons tg c) ntable)
+            (setq tag-string (copy-sequence (car e)))
+            (setq tag-string (efs/add-props tag-string 'face
+                               (when (member tag-string current)
+                                 efs/selected-face)))
+            (when (zerop cnt) (insert "  "))
+            (insert "[" (cdr (assoc tag-string ntable)) "] " tag-string (make-string
+                                                                      (- fwidth 4 (length tag-string)) ?\ ))
             (when (= (cl-incf cnt) ncol)
-              (unless (memq (caar tbl) '(:endgroup :endgrouptag))
-                (insert "\n")
-                (when (or ingroup intaggroup) (insert "  ")))
               (setq cnt 0)))))
         (insert "\n")
-        (nreverse ntable)))))
+        (efs/update-efs-buffer nil)
+        (current-buffer)))))
+
+(defun efs/update-efs-buffer (current)
+  (goto-char (point-min))
+  (beginning-of-line 1)
+  (delete-region (point) (point-at-eol))
+  (let ((header (format "%-12s" "Selected:"))
+        (selected-tags (--> current
+                            (mapconcat 'identity it " ")
+                            (efs/add-props it 'face efs/selected-face))))
+    (insert header selected-tags))
+  (let ((tag-re (concat "\\[.\\] \\(" org-tag-re "\\)")))
+    (while (re-search-forward tag-re nil t)
+      (let ((tag (match-string 1)))
+        (add-text-properties
+         (match-beginning 1) (match-end 1)
+         (list 'face
+               (cond
+                ((member tag current) efs/selected-face)
+                (t efs/unselected-face))))))))
 
 (defun emacs-fast-selection (table)
   (let* ((expert nil) ;; TODO: Add expert mode?
-         (current (flatten-list (mapcar (lambda (x) (list (car x) nil)) table)))
          (exit-after-next org-fast-tag-selection-single-key)
-         (efs/buffer-name " *Emacs Fast Selection*")
-         current tg e c ntable rtn)
+         (lookup-table (efs/construct-lookup-table (remove-if
+                                                    (lambda (x) (equal x '(:newline)))
+                                                    table)))
+         (efs-buffer (efs/construct-selection-buffer table lookup-table))
+         current tag-string e c rtn)
     (save-excursion
       (save-window-excursion
-        (setq ntable (efs/construct-selection-buffer efs/buffer-name table))
         (delete-other-windows)
-        (set-window-buffer (split-window-vertically) (get-buffer-create efs/buffer-name))
-        (org-switch-to-buffer-other-window efs/buffer-name)
+        (set-window-buffer (split-window-vertically) efs-buffer)
+        (org-switch-to-buffer-other-window efs-buffer)
         (goto-char (point-min))
         (unless expert (org-fit-window-to-buffer))
         (setq rtn
@@ -136,46 +173,31 @@ that will be added to PLIST.  Returns the string that was modified."
                       (org-switch-to-buffer-other-window efs/buffer-name)
                       (org-fit-window-to-buffer)))
                    ((or (= c ?\C-g)
-                        (and (= c ?q) (not (rassoc c ntable))))
+                        (and (= c ?q) (not (rassoc c lookup-table))))
                     (setq quit-flag t))
                    ((= c ?\ )
                     (setq current nil)
                     (when exit-after-next (setq exit-after-next 'now)))
-                   ((setq e (rassoc c ntable) tg (car e))
-                    (if (member tg current)
-                        (setq current (delete tg current))
-                      (push tg current))
+                   ((setq e (rassoc c lookup-table) tag-string (car e))
+                    (if (member tag-string current)
+                        (setq current (delete tag-string current))
+                      (push tag-string current))
                     (when exit-after-next (setq exit-after-next 'now))))
 
                   ;; Create a sorted list
                   (setq current
                         (sort current
                               (lambda (a b)
-                                (assoc b (cdr (memq (assoc a ntable) ntable))))))
+                                (assoc b (cdr (memq (assoc a lookup-table) lookup-table))))))
                   (when (eq exit-after-next 'now) (throw 'exit t))
-                  (goto-char (point-min))
-                  (beginning-of-line 1)
-                  (delete-region (point) (point-at-eol))
-                  (let ((header (format "%-12s" "Selected:"))
-                        (selected-tags (--> current
-                                            (mapconcat 'identity it " ")
-                                            (efs/add-props it 'face efs/selected-face))))
-                    (insert header selected-tags))
-                  (let ((tag-re (concat "\\[.\\] \\(" org-tag-re "\\)")))
-                    (while (re-search-forward tag-re nil t)
-                      (let ((tag (match-string 1)))
-                        (add-text-properties
-                         (match-beginning 1) (match-end 1)
-                         (list 'face
-                               (cond
-                                ((member tag current) efs/selected-face)
-                                (t efs/unselected-face)))))))
+                  (efs/update-efs-buffer current)
                   (goto-char (point-min)))))
         (if rtn
             (mapconcat 'identity current ":")
           nil)))))
 
-(emacs-fast-selection '(("Hello" . ?h) ("World") ("Clock") ("Create_Tab" . ?t)))
+(let ((a (emacs-fast-selection '(("Hello" . ?h) ("World") (:newline) ("Allow") ("Woah") ("Where") ("Clock") ("Create_Tab" . ?t)))))
+  (message "%s" a))
 
 (provide 'emacs-fast-selection)
 ;;; emacs-fast-selection.el ends here
