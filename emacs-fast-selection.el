@@ -35,24 +35,24 @@
    (group-list :initform nil :initarg :group-list)
    (current :initform nil)))
 
-(defun efsss/make (select-spec)
+(defun efs-sm/make (select-spec)
   (efs-select-machine :lookup-table (efs/construct-lookup-table (remove-if (lambda (x) (eq x :newline))
                                                                            (flatten-list select-spec)))
                       :group-list (remove-if (lambda (x) (not (consp x)))
                                              select-spec)))
 
-(defmethod efsss/selected ((efsss efs-select-machine))
+(defmethod efs-sm/selected ((efsss efs-select-machine))
   (slot-value efsss 'current))
 
-(defmethod efsss/key-to-sym ((efsss efs-select-machine) key)
+(defmethod efs-sm/key-to-sym ((efsss efs-select-machine) key)
   (with-slots (lookup-table) efsss
     (rassoc key lookup-table)))
 
-(defmethod efsss/sym-to-key ((efsss efs-select-machine) sym)
+(defmethod efs-sm/sym-to-key ((efsss efs-select-machine) sym)
   (with-slots (lookup-table) efsss
     (assoc sym lookup-table)))
 
-(defmethod efsss/select ((efsss efs-select-machine) key)
+(defmethod efs-sm/select ((efsss efs-select-machine) key)
   (with-slots (lookup-table group-list current) efsss
     (let* ((option (car (rassoc key lookup-table))))
       (if (member option current)
@@ -111,7 +111,7 @@ that will be added to PLIST.  Returns the string that was modified."
                  (sym)
                  (let* ((option-string (--> (symbol-name sym)
                                             (efs/add-props it 'face nil)))
-                        (key (cdr (efsss/sym-to-key state-machine sym))))
+                        (key (cdr (efs-sm/sym-to-key state-machine sym))))
                    (insert "[" key "] " option-string
                            (make-string (- fwidth 4 (length option-string)) ?\ ))
                    (when (= (cl-incf cnt) ncol)
@@ -161,7 +161,7 @@ that will be added to PLIST.  Returns the string that was modified."
                 (t efs/unselected-face))))))))
 
 (defun emacs-fast-select (&rest select-spec)
-  (let* ((state-machine (efsss/make select-spec))
+  (let* ((state-machine (efs-sm/make select-spec))
          (efs-buffer (efs/construct-selection-buffer select-spec state-machine))
          current option keypress exit-after-next)
     (save-excursion
@@ -181,13 +181,13 @@ that will be added to PLIST.  Returns the string that was modified."
               (cond
                ((= keypress ?\r) (throw 'exit t))
                ((or (= keypress ?\C-g)
-                    (and (= keypress ?q) (not (efsss/key-to-sym state-machine keypress))))
+                    (and (= keypress ?q) (not (efs-sm/key-to-sym state-machine keypress))))
                 (setq quit-flag t))
                ((= keypress ?\ )
                 (setf (slot-value state-machine 'current) nil)
                 (when exit-after-next (setq exit-after-next 'now)))
                (t
-                (efsss/select state-machine keypress)
+                (efs-sm/select state-machine keypress)
                 (when exit-after-next (setq exit-after-next 'now))))
               (when (eq exit-after-next 'now) (throw 'exit t))
               (efs/update-efs-buffer (slot-value state-machine 'current))
